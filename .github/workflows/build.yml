@@ -1,0 +1,146 @@
+name: Build custom geoip.dat and geosite.dat
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "15 3 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: geodata-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v6
+
+      - name: Set variables
+        shell: bash
+        run: |
+          echo "TAG_NAME=$(date -u +'%Y%m%d%H%M')" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=$(date -u +'%Y%m%d%H%M')" >> "$GITHUB_ENV"
+
+      - name: Checkout builders and source lists
+        shell: bash
+        run: |
+          git clone --depth=1 https://github.com/v2fly/geoip.git v2fly-geoip
+          git clone --depth=1 https://github.com/Loyalsoldier/domain-list-custom.git domain-list-custom
+          git clone --depth=1 https://github.com/v2fly/domain-list-community.git domain-list-community
+          git clone --depth=1 https://github.com/hydraponique/roscomvpn-geosite.git hydra-geosite
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: domain-list-custom/go.mod
+          cache: true
+
+      - name: Prepare directories
+        shell: bash
+        run: |
+          mkdir -p upstream dist
+
+      - name: Download upstream geoip.dat files
+        shell: bash
+        run: |
+          curl -fsSL -o upstream/loyalsoldier-geoip.dat \
+            https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
+
+          curl -fsSL -o upstream/hydra-geoip.dat \
+            https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat
+
+      - name: Build merged geoip.dat
+        shell: bash
+        run: |
+          cat > geoip-config.json <<EOF
+          {
+            "input": [
+              {
+                "type": "v2rayGeoIPDat",
+                "action": "add",
+                "args": {
+                  "uri": "${GITHUB_WORKSPACE}/upstream/loyalsoldier-geoip.dat"
+                }
+              },
+              {
+                "type": "v2rayGeoIPDat",
+                "action": "add",
+                "args": {
+                  "uri": "${GITHUB_WORKSPACE}/upstream/hydra-geoip.dat",
+                  "wantedList": ["direct", "whitelist", "private"]
+                }
+              }
+            ],
+            "output": [
+              {
+                "type": "v2rayGeoIPDat",
+                "action": "output",
+                "args": {
+                  "outputDir": "${GITHUB_WORKSPACE}/dist",
+                  "outputName": "geoip.dat"
+                }
+              }
+            ]
+          }
+          EOF
+
+          cd v2fly-geoip
+          go run ./ -c "${GITHUB_WORKSPACE}/geoip-config.json"
+      - name: Merge hydraponique geosite data into v2fly data
+        shell: bash
+        run: |
+          mkdir -p domain-list-community/data/hydraponique
+          cp -a hydra-geosite/data/. domain-list-community/data/hydraponique/
+
+      - name: Apply Loyalsoldier geosite behavior
+        shell: bash
+        run: |
+          echo "include:geolocation-!cn @cn" >> ./domain-list-community/data/cn
+          echo "include:geolocation-cn @!cn" >> ./domain-list-community/data/geolocation-\!cn
+
+      - name: Build merged geosite.dat
+        shell: bash
+        run: |
+          cd domain-list-custom
+          go run ./ --datapath="${GITHUB_WORKSPACE}/domain-list-community/data"
+          cp publish/geosite.dat "${GITHUB_WORKSPACE}/dist/geosite.dat"
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          cd dist
+          sha256sum geoip.dat > geoip.dat.sha256sum
+          sha256sum geosite.dat > geosite.dat.sha256sum
+
+      - name: Push dist to release branch
+        shell: bash
+        run: |
+          cd dist
+          git init
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b release
+          git add -A
+          git commit -m "${RELEASE_NAME}"
+          git remote add origin "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+          git push -f origin release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ env.RELEASE_NAME }}
+          tag_name: ${{ env.TAG_NAME }}
+          draft: false
+          prerelease: false
+          files: |
+            dist/geoip.dat
+            dist/geoip.dat.sha256sum
+            dist/geosite.dat
+            dist/geosite.dat.sha256sum
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
