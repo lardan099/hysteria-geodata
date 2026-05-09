@@ -23,8 +23,9 @@ jobs:
       - name: Set variables
         shell: bash
         run: |
-          echo "TAG_NAME=$(date -u +'%Y%m%d%H%M')" >> "$GITHUB_ENV"
-          echo "RELEASE_NAME=$(date -u +'%Y%m%d%H%M')" >> "$GITHUB_ENV"
+          BASE_TAG="$(date -u +'%Y%m%d%H%M')"
+          echo "TAG_NAME=${BASE_TAG}-${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=${BASE_TAG}-${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
 
       - name: Checkout builders and source lists
         shell: bash
@@ -37,8 +38,11 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: domain-list-custom/go.mod
+          go-version: '1.24.x'
           cache: true
+          cache-dependency-path: |
+            v2fly-geoip/go.sum
+            domain-list-custom/go.sum
 
       - name: Prepare directories
         shell: bash
@@ -91,11 +95,31 @@ jobs:
 
           cd v2fly-geoip
           go run ./ -c "${GITHUB_WORKSPACE}/geoip-config.json"
+
       - name: Merge hydraponique geosite data into v2fly data
         shell: bash
         run: |
-          mkdir -p domain-list-community/data/hydraponique
-          cp -a hydra-geosite/data/. domain-list-community/data/hydraponique/
+          set -euo pipefail
+
+          for src in hydra-geosite/data/*; do
+            [ -f "$src" ] || continue
+
+            name="$(basename "$src")"
+            dst="domain-list-community/data/${name}"
+
+            if [ -f "$dst" ]; then
+              {
+                echo
+                echo "# === hydraponique/roscomvpn-geosite:${name} ==="
+                cat "$src"
+              } >> "$dst"
+            else
+              cp "$src" "$dst"
+            fi
+          done
+
+          echo "Merged hydraponique lists:"
+          ls -la domain-list-community/data | grep -E 'category-ru|whitelist|win-spy|torrent|apple|microsoft|steam|epic-games|riot|telegram|cloudflare|anthropic' || true
 
       - name: Apply Loyalsoldier geosite behavior
         shell: bash
@@ -108,6 +132,13 @@ jobs:
         run: |
           cd domain-list-custom
           go run ./ --datapath="${GITHUB_WORKSPACE}/domain-list-community/data"
+
+          if [ ! -f publish/geosite.dat ]; then
+            echo "publish/geosite.dat not found"
+            find . -maxdepth 3 -type f | sort
+            exit 1
+          fi
+
           cp publish/geosite.dat "${GITHUB_WORKSPACE}/dist/geosite.dat"
 
       - name: Generate checksums
@@ -116,6 +147,7 @@ jobs:
           cd dist
           sha256sum geoip.dat > geoip.dat.sha256sum
           sha256sum geosite.dat > geosite.dat.sha256sum
+          ls -lh
 
       - name: Push dist to release branch
         shell: bash
