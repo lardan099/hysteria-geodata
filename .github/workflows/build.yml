@@ -3,7 +3,7 @@ name: Build custom geoip.dat and geosite.dat
 on:
   workflow_dispatch:
   schedule:
-    - cron: "15 */6 * * *"
+    - cron: "15 3 * * *"
 
 permissions:
   contents: write
@@ -34,7 +34,6 @@ jobs:
           git clone --depth=1 https://github.com/Loyalsoldier/domain-list-custom.git domain-list-custom
           git clone --depth=1 https://github.com/v2fly/domain-list-community.git domain-list-community
           git clone --depth=1 https://github.com/hydraponique/roscomvpn-geosite.git hydra-geosite
-          git clone --depth=1 https://github.com/runetfreedom/russia-domains-list.git runetfreedom-domains
 
       - name: Determine required Go version
         id: go-version
@@ -76,14 +75,11 @@ jobs:
       - name: Download upstream geoip.dat files
         shell: bash
         run: |
-          curl -fsSL --retry 3 --retry-delay 2 -o upstream/loyalsoldier-geoip.dat \
+          curl -fsSL -o upstream/loyalsoldier-geoip.dat \
             https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
 
-          curl -fsSL --retry 3 --retry-delay 2 -o upstream/hydra-geoip.dat \
+          curl -fsSL -o upstream/hydra-geoip.dat \
             https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat
-
-          curl -fsSL --retry 3 --retry-delay 2 -o upstream/runetfreedom-geoip.dat \
-            https://raw.githubusercontent.com/runetfreedom/russia-blocked-geoip/release/geoip.dat
 
       - name: Build merged geoip.dat
         shell: bash
@@ -104,21 +100,6 @@ jobs:
                 "args": {
                   "uri": "${GITHUB_WORKSPACE}/upstream/hydra-geoip.dat",
                   "wantedList": ["direct", "whitelist", "private"]
-                }
-              },
-              {
-                "type": "v2rayGeoIPDat",
-                "action": "add",
-                "args": {
-                  "uri": "${GITHUB_WORKSPACE}/upstream/runetfreedom-geoip.dat",
-                  "wantedList": [
-                    "ru-blocked",
-                    "ru-blocked-community",
-                    "re-filter",
-                    "ru-whitelist",
-                    "ddos-guard",
-                    "yandex"
-                  ]
                 }
               }
             ],
@@ -163,129 +144,11 @@ jobs:
           echo "Merged hydraponique lists:"
           ls -la domain-list-community/data | grep -E 'category-ru|whitelist|win-spy|torrent|apple|microsoft|steam|epic-games|riot|telegram|cloudflare|anthropic' || true
 
-      - name: Add current runetfreedom geosite sources
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          temp_dir="$(mktemp -d)"
-          trap 'rm -rf "$temp_dir"' EXIT
-
-          curl -fsSL --retry 3 --retry-delay 2 \
-            https://antifilter.download/list/domains.lst \
-            -o "$temp_dir/antifilter-download"
-          curl -fsSL --retry 3 --retry-delay 2 \
-            https://community.antifilter.download/list/domains.lst \
-            -o "$temp_dir/antifilter-download-community"
-          curl -fsSL --retry 3 --retry-delay 2 \
-            https://raw.githubusercontent.com/1andrevich/Re-filter-lists/refs/heads/main/domains_all.lst \
-            -o "$temp_dir/refilter"
-
-          python3 .github/scripts/normalize-domain-list.py \
-            "$temp_dir/antifilter-download" \
-            domain-list-community/data/antifilter-download
-          python3 .github/scripts/normalize-domain-list.py \
-            "$temp_dir/antifilter-download-community" \
-            domain-list-community/data/antifilter-download-community
-          python3 .github/scripts/normalize-domain-list.py \
-            "$temp_dir/refilter" \
-            domain-list-community/data/refilter
-
-          for source_name in spy update extra; do
-            curl -fsSL --retry 3 --retry-delay 2 \
-              "https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/${source_name}.txt" \
-              | awk '$1 == "0.0.0.0" { print $2 }' \
-              >> "domain-list-community/data/win-${source_name}"
-          done
-
-          curl -fsSL --retry 3 --retry-delay 2 \
-            https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt \
-            | perl -ne '/^\|\|([-_0-9a-zA-Z]+(\.[-_0-9a-zA-Z]+){1,64})\^$/ && print "$1\n"' \
-            > "$temp_dir/category-ads-all"
-          curl -fsSL --retry 3 --retry-delay 2 \
-            'https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=1&mimetype=plaintext' \
-            | perl -ne '/^127\.0\.0\.1\s([-_0-9a-zA-Z]+(\.[-_0-9a-zA-Z]+){1,64})$/ && print "$1\n"' \
-            >> "$temp_dir/category-ads-all"
-          sed -i '/^t\.co$/Id' "$temp_dir/category-ads-all"
-          cat "$temp_dir/category-ads-all" >> domain-list-community/data/category-ads-all
-
-          for src in runetfreedom-domains/*; do
-            [ -f "$src" ] || continue
-            [ "$(basename "$src")" = "README.md" ] && continue
-
-            name="$(basename "$src")"
-            dst="domain-list-community/data/${name}"
-            if [ -f "$dst" ]; then
-              {
-                echo
-                echo "# === runetfreedom/russia-domains-list:${name} ==="
-                cat "$src"
-              } >> "$dst"
-            else
-              cp "$src" "$dst"
-            fi
-          done
-
-          {
-            echo "include:antifilter-download-community"
-            echo "include:refilter"
-          } > domain-list-community/data/ru-blocked
-
-          {
-            echo "include:antifilter-download"
-            echo "include:antifilter-download-community"
-            echo "include:refilter"
-          } > domain-list-community/data/ru-blocked-all
-
       - name: Apply Loyalsoldier geosite behavior
         shell: bash
         run: |
           echo "include:geolocation-!cn @cn" >> ./domain-list-community/data/cn
           echo "include:geolocation-cn @!cn" >> ./domain-list-community/data/geolocation-\!cn
-
-      - name: Deduplicate geosite source lists
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          for file in domain-list-community/data/*; do
-            [ -f "$file" ] || continue
-            awk '
-              function trim(value) {
-                sub(/^[[:space:]]+/, "", value)
-                sub(/[[:space:]]+$/, "", value)
-                return value
-              }
-
-              {
-                sub(/\r$/, "")
-                line = trim($0)
-                if (line == "") next
-                if (line ~ /^#/) {
-                  print line
-                  next
-                }
-
-                field_count = split(line, fields, /[[:space:]]+/)
-                rule = fields[1]
-                lower_rule = tolower(rule)
-                if (lower_rule ~ /^domain:/) {
-                  key = substr(lower_rule, 8)
-                } else if (lower_rule ~ /^regexp:/) {
-                  key = rule
-                } else {
-                  key = lower_rule
-                }
-
-                for (i = 2; i <= field_count; i++) {
-                  key = key " " tolower(fields[i])
-                }
-
-                if (!seen[key]++) print line
-              }
-            ' "$file" > "${file}.deduplicated"
-            mv "${file}.deduplicated" "$file"
-          done
 
       - name: Build merged geosite.dat
         shell: bash
@@ -301,15 +164,6 @@ jobs:
 
           cp publish/geosite.dat "${GITHUB_WORKSPACE}/dist/geosite.dat"
 
-      - name: Deduplicate compiled geodata
-        shell: bash
-        run: |
-          cp .github/scripts/deduplicate-geodata.go domain-list-custom/deduplicate-geodata.go
-          cd domain-list-custom
-          go run ./deduplicate-geodata.go \
-            -geoip="${GITHUB_WORKSPACE}/dist/geoip.dat" \
-            -geosite="${GITHUB_WORKSPACE}/dist/geosite.dat"
-
       - name: Generate checksums
         shell: bash
         run: |
@@ -317,17 +171,6 @@ jobs:
           sha256sum geoip.dat > geoip.dat.sha256sum
           sha256sum geosite.dat > geosite.dat.sha256sum
           ls -lh
-
-      - name: Validate merged geodata
-        shell: bash
-        run: |
-          cp .github/scripts/validate-geodata.go domain-list-custom/validate-geodata.go
-          cd domain-list-custom
-          go run ./validate-geodata.go \
-            -geoip="${GITHUB_WORKSPACE}/dist/geoip.dat" \
-            -geosite="${GITHUB_WORKSPACE}/dist/geosite.dat" \
-            -require-geoip="ru-blocked,ru-blocked-community,re-filter,ru-whitelist,ddos-guard,yandex" \
-            -require-geosite="antifilter-download,antifilter-download-community,refilter,ru-blocked,ru-blocked-all,ru-available-only-inside,win-spy,win-update,win-extra,category-ads-all"
 
       - name: Push dist to release branch
         shell: bash
@@ -355,4 +198,4 @@ jobs:
             dist/geosite.dat
             dist/geosite.dat.sha256sum
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  
